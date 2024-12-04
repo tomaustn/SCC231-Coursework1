@@ -379,7 +379,6 @@ class Traceroute(ICMPPing):
         rtts = dict()
 
         numBytes = 48
-        dstPort = 1024 # arb
 
         for i in range(3):
             # 1. Send one ICMP traceroute probe
@@ -651,7 +650,6 @@ class MultiThreadedTraceRoute(Traceroute):
                     self.dataPool["rtts"][ttl][seqNum] = timeRecvd - timeSent  # Store RTT
                     self.dataPool["hopAddresses"][ttl][seqNum] = hopAddr  # Store hop address
                     self.dataPool["packetKeys"][ttl].append(seqNum)  # Store the sequence number
-
 
 
                 elif args.protocol == "udp":
