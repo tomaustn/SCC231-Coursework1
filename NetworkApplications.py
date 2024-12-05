@@ -709,8 +709,39 @@ class Proxy(NetworkApplication):
     def __init__(self, args):
         print('Web Proxy starting on port: %i...' % (args.port))
 
-        pass # TODO: Remove this once this method is implemented       
-            
+        serverSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        serverSocket.bind(("", args.port))
+        serverSocket.listen(100)
+        print("Server listening on port", args.port)
+
+        while True:
+            connectionSocket, addr = serverSocket.accept()
+            print(f"Connection established with {addr}")
+            threading.Thread(target=self.handleRequest, args=(connectionSocket,)).start()
+        
+# create new socket and connect() to target server
+# send() to forward req
+# recv() on the server socket to get webserver response.
+
+    def handleRequest(self, connectionSocket):
+        try:
+            message = connectionSocket.recv(MAX_DATA_RECV).decode()
+            print(message)
+            hostname, port = message.split()[1].split(":") # TODO: recheck this!!!
+            #target = # find whatever is being accessed like url etc
+
+            targetSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            targetSocket.connect((hostname, port))
+            targetSocket.send(message.encode())
+
+            response = targetSocket.recv(MAX_DATA_RECV)
+            connectionSocket.send(response)
+
+        except Exception as e:
+            print(f"Error handling request: {e}")
+
+        finally:
+            connectionSocket.close()
 
 # NOTE: Do NOT delete the code below
 if __name__ == "__main__":
