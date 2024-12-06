@@ -15,7 +15,7 @@ import threading
 UDP_CODE = socket.IPPROTO_UDP
 ICMP_ECHO_REQUEST = 8
 MAX_DATA_RECV = 65535
-MAX_TTL = 30
+MAX_TTL = 30 #[DEBUG]: CHANGE BACK TO 30
 
 def setupArgumentParser() -> argparse.Namespace:
         parser = argparse.ArgumentParser(
@@ -122,6 +122,8 @@ class NetworkApplication:
 
     # Print one line of traceroute output
     def printMultipleResults(self, ttl: int, pkt_keys: list, hop_addrs: dict, rtts: dict, destinationHostname = ''):
+        #print(f"[DEBUG]: TTL:{ttl}, packetKeys:{pkt_keys}, hopAddresses:{hop_addrs}, rtts:{rtts}, destinationHostname:{destinationHostname}")
+        #TTL:1, packetKeys:[42808, 40274, 236], hopAddresses:{0: '10.60.24.1', 1: '10.60.24.1', 2: '10.60.24.1'}, rtts:{0: 0.00019359588623046875, 1: 0.00011038780212402344, 2: 8.273124694824219e-05}, destinationHostname:lancs.ac.uk
         if pkt_keys is None:
             print(str(ttl) + '   * * *')
             return
@@ -288,8 +290,14 @@ class ICMPPing(NetworkApplication):
         if ttl is not None:
             self.icmpSocket.setsockopt(socket.SOL_IP, socket.IP_TTL, ttl)
 
+        #print(f"[DEBUG] Sending packet to {destinationAddress}, PacketID={packetID}, TTL={ttl}")
+
         # 4. Send packet using socket
         self.icmpSocket.sendto(packet+data, (destinationAddress, 1))
+
+        #print(f"[DEBUG] Set TTL={ttl} on ICMP socket")
+
+
 
         # 5. Record time of sending (state)
         timeSent = time.time()
@@ -377,15 +385,18 @@ class Traceroute(ICMPPing):
         pktKeys = []
         hopAddresses = dict()
         rtts = dict()
-        seqNum = 0
 
         numBytes = 52
 
         for i in range(3):
-            print(f"Sending probe {i+1} with TTL={ttl}")
+            #print(f"Sending probe {i+1} with TTL={ttl}")
             packetId = random.randint(1, 65535)
-            timeSent = self.sendOnePing(self.dstAddress, packetId, ttl, seqNum, dataLength=numBytes)
+            timeSent = self.sendOnePing(self.dstAddress, packetId, i, ttl, dataLength=numBytes)
+            
             pktKeys.append(packetId)
+
+            #print(f"[DEBUG] Sending ICMP probe: TTL={ttl}, SeqNum={i}, PacketID={packetId}")
+
             
             replyPacket, hopAddr, timeRecvd = self.receiveOneTraceRouteResponse()
 
@@ -394,12 +405,16 @@ class Traceroute(ICMPPing):
 
             seqNumRecieved, icmpType = self.parseICMPTracerouteResponse(replyPacket)
 
-            if self.dstAddress == hopAddr and icmpType == 3:
-                self.isDestinationReached = True
 
-            if seqNum == seqNumRecieved:
-                rtts[seqNum] = timeRecvd - timeSent
-                hopAddresses[seqNum] = hopAddr
+            #print(f"[DEBUG] Received packet from {hopAddr} with ICMP Type={icmpType}")
+
+            if self.dstAddress == hopAddr and icmpType == 0:
+                self.isDestinationReached = True
+                
+            if seqNumRecieved == i:
+                rtts[packetId] = timeRecvd - timeSent
+                hopAddresses[packetId] = hopAddr
+
 
         self.printMultipleResults(ttl, pktKeys, hopAddresses, rtts, args.hostname)
 
@@ -488,14 +503,17 @@ class Traceroute(ICMPPing):
         ip_header = struct.unpack("!BBHHHBBH4s4s", trReplyPacket[:20])
         ip_header_len = (ip_header[0] & 0x0F) * 4 #read header, get len 
     
-        icmpType, _, _, seqNum, _  = struct.unpack("!BBHHH", trReplyPacket[ip_header_len:ip_header_len + 8])
+        icmpType, _, _, packetId, seqNum  = struct.unpack("!BBHHH", trReplyPacket[ip_header_len:ip_header_len + 8])
+        #print(struct.unpack("!BBHHH", trReplyPacket[ip_header_len:ip_header_len + 8]))
 
         if icmpType == 11:
             ip_header_inner = struct.unpack("!BBHHHBBH4s4s", trReplyPacket[ip_header_len + 8:ip_header_len+28])
-            ip_header_len_field = (ip_header_inner[0] & 0x0F)
-            ip_header_inner_len = ip_header_len_field * 4
+            ip_header_inner_len = (ip_header_inner[0] & 0x0F) * 4
+
             
             _, _, _, seqNum = struct.unpack('!HHHH', trReplyPacket[ip_header_len + 8 + ip_header_inner_len : ip_header_len + 8 + ip_header_inner_len + 8])
+            #print(struct.unpack('!HHHH', trReplyPacket[ip_header_len + 8 + ip_header_inner_len : ip_header_len + 8 + ip_header_inner_len + 8]))
+        #print(f"[DEBUG] Parsing ICMP packet: ICMP Type={icmpType}, SeqNum={seqNum}, packetId={packetId}")
 
         return seqNum, icmpType
 
@@ -508,8 +526,10 @@ class Traceroute(ICMPPing):
         # 1. Receive one packet or timeout
         try:
             pkt, addr = self.icmpSocket.recvfrom(MAX_DATA_RECV)
+            
             timeReceipt = time.time()
             hopAddr = addr[0]
+            #print(f"[DEBUG] Packet received from {hopAddr}")
         
         # 2. Handler for timeout on receive
         except socket.timeout as e:
@@ -590,13 +610,13 @@ class MultiThreadedTraceRoute(Traceroute):
 
                 if args.protocol == "icmp":
                     timeSent = self.sendIcmpProbesAndCollectResponses(ttl)
-                    # with self.lock:
-                    #     self.dataPool[""] # todo
+                    with self.lock:
+                        self.dataPool["packetKeys"][ttl].append(timeSent)
                 
                 elif args.protocol == "udp":
                     timeSent = self.sendUdpProbesAndCollectResponses(ttl)
-                    # with self.lock:
-                    #     self.dataPool[""] # todo
+                    with self.lock:
+                        self.dataPool["packetKeys"][ttl].append(timeSent)
 
                 # Sleep for a short period between sending probes
                 time.sleep(0.05)  # Small delay between probes
@@ -620,19 +640,21 @@ class MultiThreadedTraceRoute(Traceroute):
 
                 if args.protocol == "icmp":
                     seqNum, icmpType = self.parseICMPTracerouteResponse(trReplyPacket)
-                    for ttl, pktKeys in self.dataPool["packetKeys"].items():
-                        if seqNum in pktKeys:
-                            with self.lock:
+                    with self.lock:
+                        for ttl, pktKeys in self.dataPool["packetKeys"].items():
+                            if seqNum in pktKeys:
                                 self.dataPool["hopAddresses"][ttl][seqNum] = hopAddr
-                            break
-                    
+                                self.dataPool["rtts"][ttl][seqNum] = timeRecvd
+                                break
+                        
                 elif args.protocol == "udp":
                     dstPort, icmpType = self.parseUDPTracerouteResponse(trReplyPacket)
-                    for ttl, pktKeys in self.dataPool["packetKeys"].items():
-                        if dstPort in pktKeys:
-                            with self.lock:
+                    with self.lock:
+                        for ttl, pktKeys in self.dataPool["packetKeys"].items():
+                            if seqNum in pktKeys:
                                 self.dataPool["hopAddresses"][ttl][dstPort] = hopAddr
-                            break
+                                self.dataPool["rtts"][ttl][dstPort] = timeRecvd
+                                break
             except Exception as e:
                 print(f"Error receiving response: {e}")  
 
@@ -643,7 +665,7 @@ class MultiThreadedTraceRoute(Traceroute):
 # You can test the web server as follows: 
 # First, run the server in the terminal: python3 NetworkApplications.py web 
 # Then, copy the following and paste to a browser's address bar: 127.0.0.1:8080/index.html
-# NOTE: the index.html file needs to be downloaded from the Moodle (Dummy HTML file)
+# NOTE: the index.html file needs to be downloa ded from the Moodle (Dummy HTML file)
 # and copied to the folder where you run this code
 class WebServer(NetworkApplication):
 
