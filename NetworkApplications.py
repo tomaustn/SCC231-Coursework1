@@ -748,11 +748,18 @@ class WebServer(NetworkApplication):
 class Proxy(NetworkApplication):
 
     def __init__(self, args):
+
+        self.cacheDir = "./cache"
+        os.makedirs(self.cacheDir, exist_ok=True)
+
+        self.cache = {} # local cache tracker
+
         print('Web Proxy starting on port: %i...' % (args.port))
 
         serverSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         serverSocket.bind(("", args.port))
         serverSocket.listen(100)
+
         print("Server listening on port", args.port)
 
         while True:
@@ -764,42 +771,77 @@ class Proxy(NetworkApplication):
 # send() to forward req
 # recv() on the server socket to get webserver response.
 
-    def handleRequest(self, connectionSocket):
+    def handleRequest(self, connectionSocket) -> None:
         try:
             message = connectionSocket.recv(MAX_DATA_RECV).decode()
             url = message.split()[1]
-            host = message.split()[4]
+            
+            if self.isCached(url):
+                print("Data cached - serving from cache:")
+                self.serveFromCache(connectionSocket, url)
+            else:
+                print("Data not in cache - fetching from server")
+                self.fetchAndCache(connectionSocket, message, url)
+        except Exception as e:
+            print(f"Error handling request: {e}")
+            connectionSocket.close()
 
-            print(f"hostname = {url}, port = {host}")
+    def isCached(self, url: str) -> bool:
+        cacheFile = self.createHash(url)
+        return os.path.exists(cacheFile)
+
+    def serveFromCache(self, clientSocket, url: str) -> None:
+        try:
+            cachedFile = self.createHash(url)
+            with open(cachedFile, "rb") as f: # read binary
+                while (data := f.read(MAX_DATA_RECV)):
+                    clientSocket.send(data)
+        except Exception as e:
+            print(f"Error serving cache: {e}")
+        finally:
+            clientSocket.close()
+
+    def fetchAndCache(self, clientSocket, response: str, url: str) -> None:
+        try:
+            host = response.split()[4]
+
+            print(host)
 
             targetSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
             targetSocket.connect((host, 80))
             targetSocket.settimeout(5)
-            targetSocket.send(message.encode())
+            targetSocket.send(response.encode())
 
-            response = b""
+            cacheFile = self.createHash(url)
+            cache = open(cacheFile, "wb")
+
             while True:
-                data = targetSocket.recv(MAX_DATA_RECV)
-                if not data:
-                    break
-                response += data
+                try:
+                    data = targetSocket.recv(MAX_DATA_RECV)
+                    if not data:
+                        break
 
-            print(f"response = {response}")
-            connectionSocket.send(response)
+                    clientSocket.send(data)
+                    cache.write(data)
+                except Exception as e:
+                    print(f"Error receiving data: {e}")
+
+            print("Fetched")
 
         except Exception as e:
-            print(f"Error handling request: {e}")
-            connectionSocket.close()
+            print(f"Fetch Error: {e}")
 
         finally:
-            connectionSocket.close()
-
-    def fetchData(self, clientSocket, response):
-
-        pass
-
-        
+            targetSocket.close()
+            clientSocket.close()
+            cache.close()
+    
+    def createHash(self, url: str) -> str:
+        # hash = sanitized url
+        hash = ''.join(c if c.isalnum() else '_' for c in url)
+        return os.path.join(self.cacheDir, f"{hash}.cache")
+            
 
 # NOTE: Do NOT delete the code below
 if __name__ == "__main__":
