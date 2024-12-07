@@ -565,13 +565,27 @@ class MultiThreadedTraceRoute(Traceroute):
         args.protocol = args.protocol.lower()
         self.timeout = args.timeout
         self.send_complete = threading.Event()
+        self.isDestinationReached = False
+        self.dstAddress = None
+        
+        ## try dest else break
+        try:
+            self.dstAddress = socket.gethostbyname(args.hostname)
+        except socket.gaierror:
+            print('Invalid hostname: ', args.hostname) 
+            return
+
+        ## Socket setup
+        self.icmpSocket = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP)
+        self.icmpSocket.settimeout(args.timeout)
+        
         # NOTE you must use a lock when accessing data shared between the two threads
         self.lock = threading.Lock()  
 
         self.dataPool = {
             "rtts" : dict(), # {ttl:{id:rtt}}
             "hopAddresses": dict(), # {ttl:{id:addr}}
-            "pktKeys": list() # ttl:[port/seqs]
+            "pktKeys": dict() # ttl:[port/seqs]
         }
 
         # 2. Create a thread to send probes
@@ -588,35 +602,39 @@ class MultiThreadedTraceRoute(Traceroute):
         self.send_thread.join()
         self.recv_thread.join()
 
-        # print results
-        for ttl in sorted(self.dataPool["rtts"].keys()):
-            pktKeys = self.dataPool["packetKeys"].get(ttl, [])
-            hopAddrs = self.dataPool["hopAddresses"].get(ttl, {})
-            rtts = self.dataPool["rtts"].get(ttl, {})
-            self.printMultipleResults(ttl, pktKeys, hopAddrs, rtts, args.hostname)
-            
+        # print results - TODO: for some reason this is not saving? strange
+        # if not self.send_thread.is_alive() and not self.recv_thread.is_alive():
+        #     for ttl in sorted(self.dataPool["rtts"].keys()):
+        #         pktKeys = self.dataPool["pktKeys"].get(ttl, [])
+        #         hopAddrs = self.dataPool["hopAddresses"].get(ttl, {})
+        #         rtts = self.dataPool["rtts"].get(ttl, {})
+        #         self.printMultipleResults(ttl, pktKeys, hopAddrs, rtts, args.hostname)
+                
     # TODO: Thread to send probes (to be implemented, a skeleton is provided)
     def send_probes(self):
 
         ttl = 1
-        while ttl <= MAX_TTL:
+        while ttl <= MAX_TTL and not self.isDestinationReached:
 
             with self.lock:
-                self.dataPool["rrts"][ttl] = dict()
+                self.dataPool["rtts"][ttl] = dict()
                 self.dataPool["hopAddresses"][ttl] = dict()
-                self.dataPool["packetKeys"][ttl] = []
+                self.dataPool["pktKeys"][ttl] = []
             # Send three probes per TTL
-            for i in range(3):
+            
+            for _ in range(3):
 
                 if args.protocol == "icmp":
                     timeSent = self.sendIcmpProbesAndCollectResponses(ttl)
                     with self.lock:
-                        self.dataPool["packetKeys"][ttl].append(timeSent)
+                        if timeSent:
+                            self.dataPool["pktKeys"][ttl].append(timeSent)
                 
                 elif args.protocol == "udp":
                     timeSent = self.sendUdpProbesAndCollectResponses(ttl)
                     with self.lock:
-                        self.dataPool["packetKeys"][ttl].append(timeSent)
+                        if timeSent:
+                            self.dataPool["pktKeys"][ttl].append(timeSent) # really, this is dstPort but pktKeys allows use of one collectively
 
                 # Sleep for a short period between sending probes
                 time.sleep(0.05)  # Small delay between probes
@@ -628,33 +646,34 @@ class MultiThreadedTraceRoute(Traceroute):
         # Notify the other thread that sending is complete
         self.send_complete.set()   
 
-    # TODO: Thread to receive responses (to be implemented, a skeleton is provided)
+    # TODO: Thread to receive responsesl notified by the other thread
     def receive_responses(self):
-        # Keep receiving responses until notified by the other thread
-        while not self.send_complete.is_set():
+        while not self.send_complete.is_set() and not self.isDestinationReached:
             try:
                 trReplyPacket, hopAddr, timeRecvd = self.receiveOneTraceRouteResponse()
 
                 if trReplyPacket is None:
                     continue
 
+                seqNum = None
+
                 if args.protocol == "icmp":
                     seqNum, icmpType = self.parseICMPTracerouteResponse(trReplyPacket)
+                        
+                elif args.protocol == "udp":
+                    seqNum, icmpType = self.parseUDPTracerouteResponse(trReplyPacket)
+
+                if seqNum is not None:
                     with self.lock:
-                        for ttl, pktKeys in self.dataPool["packetKeys"].items():
+                        for ttl, pktKeys in self.dataPool["pktKeys"].items():
                             if seqNum in pktKeys:
                                 self.dataPool["hopAddresses"][ttl][seqNum] = hopAddr
                                 self.dataPool["rtts"][ttl][seqNum] = timeRecvd
+
+                                if hopAddr == self.dstAddress:
+                                    self.isDestinationReached = True
                                 break
-                        
-                elif args.protocol == "udp":
-                    dstPort, icmpType = self.parseUDPTracerouteResponse(trReplyPacket)
-                    with self.lock:
-                        for ttl, pktKeys in self.dataPool["packetKeys"].items():
-                            if seqNum in pktKeys:
-                                self.dataPool["hopAddresses"][ttl][dstPort] = hopAddr
-                                self.dataPool["rtts"][ttl][dstPort] = timeRecvd
-                                break
+
             except Exception as e:
                 print(f"Error receiving response: {e}")  
 
@@ -748,22 +767,39 @@ class Proxy(NetworkApplication):
     def handleRequest(self, connectionSocket):
         try:
             message = connectionSocket.recv(MAX_DATA_RECV).decode()
-            print(message)
-            hostname, port = message.split()[1].split(":") # TODO: recheck this!!!
-            #target = # find whatever is being accessed like url etc
+            url = message.split()[1]
+            host = message.split()[4]
+
+            print(f"hostname = {url}, port = {host}")
 
             targetSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            targetSocket.connect((hostname, port))
+
+            targetSocket.connect((host, 80))
+            targetSocket.settimeout(5)
             targetSocket.send(message.encode())
 
-            response = targetSocket.recv(MAX_DATA_RECV)
+            response = b""
+            while True:
+                data = targetSocket.recv(MAX_DATA_RECV)
+                if not data:
+                    break
+                response += data
+
+            print(f"response = {response}")
             connectionSocket.send(response)
 
         except Exception as e:
             print(f"Error handling request: {e}")
+            connectionSocket.close()
 
         finally:
             connectionSocket.close()
+
+    def fetchData(self, clientSocket, response):
+
+        pass
+
+        
 
 # NOTE: Do NOT delete the code below
 if __name__ == "__main__":
