@@ -388,7 +388,7 @@ class Traceroute(ICMPPing):
 
         numBytes = 52
 
-        for i in range(1):
+        for i in range(3):
             #print(f"Sending probe {i+1} with TTL={ttl}")
             packetId = random.randint(1, 65535)
             timeSent = self.sendOnePing(self.dstAddress, packetId, i, ttl, dataLength=numBytes)
@@ -430,7 +430,7 @@ class Traceroute(ICMPPing):
         numBytes = 52
         dstPort = 33439
         
-        for _ in range(1): 
+        for _ in range(3): 
             # 1. Send one UDP traceroute probe
             dstPort += 1
             timeSent = self.sendOneUdpProbe(self.dstAddress, dstPort , ttl, numBytes)
@@ -561,21 +561,18 @@ class Traceroute(ICMPPing):
 class MultiThreadedTraceRoute(Traceroute):
 
     def __init__(self, args):
-        # 1. Initialise instance variables (add others if needed)
         args.protocol = args.protocol.lower()
         self.timeout = args.timeout
         self.send_complete = threading.Event()
         self.isDestinationReached = False
         self.dstAddress = None
         
-        ## try dest else break
         try:
             self.dstAddress = socket.gethostbyname(args.hostname)
         except socket.gaierror:
             print('Invalid hostname: ', args.hostname) 
             return
-
-        ## Socket setup
+        
         self.icmpSocket = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP)
         self.icmpSocket.settimeout(args.timeout)
         
@@ -588,62 +585,54 @@ class MultiThreadedTraceRoute(Traceroute):
             "pktKeys": dict() # ttl:[port/seqs]
         }
 
-        # 2. Create a thread to send probes
         self.send_thread = threading.Thread(target=self.send_probes)
 
-        # 3. Create a thread to receive responses 
         self.recv_thread = threading.Thread(target=self.receive_responses)
 
-        # 4. Start the threads
         self.send_thread.start()
         self.recv_thread.start()
 
-        # 5. Wait until both threads are finished executing
+
         self.send_thread.join()
         self.recv_thread.join()
 
-        # print results - TODO: for some reason this is not saving? strange
-        # if not self.send_thread.is_alive() and not self.recv_thread.is_alive():
-        #     for ttl in sorted(self.dataPool["rtts"].keys()):
-        #         pktKeys = self.dataPool["pktKeys"].get(ttl, [])
-        #         hopAddrs = self.dataPool["hopAddresses"].get(ttl, {})
-        #         rtts = self.dataPool["rtts"].get(ttl, {})
-        #         self.printMultipleResults(ttl, pktKeys, hopAddrs, rtts, args.hostname)
+        # for ttl in sorted(self.dataPool["rtts"].keys()):
+        #     pktKeys = self.dataPool["pktKeys"].get(ttl, [])
+        #     hopAddrs = self.dataPool["hopAddresses"].get(ttl, {})
+        #     rtts = self.dataPool["rtts"].get(ttl, {})
+        #     self.printMultipleResults(ttl, pktKeys, hopAddrs, rtts, args.hostname)
+
                 
     # TODO: Thread to send probes (to be implemented, a skeleton is provided)
     def send_probes(self):
-
         ttl = 1
+        self.index = ttl
         while ttl <= MAX_TTL and not self.isDestinationReached:
 
             with self.lock:
                 self.dataPool["rtts"][ttl] = dict()
                 self.dataPool["hopAddresses"][ttl] = dict()
                 self.dataPool["pktKeys"][ttl] = []
-            # Send three probes per TTL
             
-            for _ in range(1):
+            for i in range(3):
 
                 if args.protocol == "icmp":
-                    timeSent = self.sendIcmpProbesAndCollectResponses(ttl)
+                    packetId = random.randint(1, 65535)
+                    timeSent = self.sendOnePing(self.dstAddress, packetId, i, ttl, dataLength=52)
                     with self.lock:
-                        if timeSent:
-                            self.dataPool["pktKeys"][ttl].append(timeSent)
+                        self.dataPool["pktKeys"][ttl].append(packetId)
                 
                 elif args.protocol == "udp":
-                    timeSent = self.sendUdpProbesAndCollectResponses(ttl)
+                    dstPort = 33439
+                    timeSent = self.sendOneUdpProbe(self.dstAddress, dstPort, ttl, dataLength=52)
                     with self.lock:
-                        if timeSent:
-                            self.dataPool["pktKeys"][ttl].append(timeSent) # really, this is dstPort but pktKeys allows use of one collectively
+                        self.dataPool["pktKeys"][ttl].append(dstPort)
 
-                # Sleep for a short period between sending probes
                 time.sleep(0.05)  # Small delay between probes
 
             ttl += 1
 
-        # A final sleep before notifying the receive thread to exit
         time.sleep(args.timeout)
-        # Notify the other thread that sending is complete
         self.send_complete.set()   
 
     # TODO: Thread to receive responsesl notified by the other thread
@@ -663,20 +652,190 @@ class MultiThreadedTraceRoute(Traceroute):
                 elif args.protocol == "udp":
                     seqNum, icmpType = self.parseUDPTracerouteResponse(trReplyPacket)
 
-                if seqNum is not None:
-                    with self.lock:
-                        for ttl, pktKeys in self.dataPool["pktKeys"].items():
-                            if seqNum in pktKeys:
-                                self.dataPool["hopAddresses"][ttl][seqNum] = hopAddr
-                                self.dataPool["rtts"][ttl][seqNum] = timeRecvd
+                with self.lock:
+                    for ttl, pktKeys in self.dataPool["pktKeys"].items():
+                        if seqNum in pktKeys:
+                            self.dataPool["hopAddresses"][ttl][self.index] = hopAddr
+                            self.dataPool["rtts"][ttl][self.index] = timeRecvd
 
-                                if hopAddr == self.dstAddress:
-                                    self.isDestinationReached = True
-                                break
+                            if hopAddr == self.dstAddress:
+                                self.isDestinationReached = True
+                            break
 
             except Exception as e:
                 print(f"Error receiving response: {e}")  
 
+
+
+# A basic multi-threaded web server implementation
+
+# You can test the web server as follows: 
+# First, run the server in the terminal: python3 NetworkApplications.py web 
+# Then, copy the following and paste to a browser's address bar: 127.0.0.1:8080/index.html
+# NOTE: the index.html file needs to be downloa ded from the Moodle (Dummy HTML file)
+# and copied to the folder where you run this code
+class WebServer(NetworkApplication):
+
+    def __init__(self, args):
+        print('Web Server starting on port: %i...' % args.port)
+        
+        # 1. Create a TCP socket 
+        serverSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        
+        # 2. Bind the TCP socket to server address and server port
+        serverSocket.bind(("", args.port))
+        
+        # 3. Continuously listen for connections to server socket
+        serverSocket.listen(100)
+        print("Server listening on port", args.port)
+        
+        while True:
+            # 4. Accept incoming connections
+            connectionSocket, addr = serverSocket.accept()
+            print(f"Connection established with {addr}")
+            
+            # 5. Create a new thread to handle each client request
+            threading.Thread(target=self.handleRequest, args=(connectionSocket,)).start()
+
+        # Close server socket (this would only happen if the loop was broken, which it isn't in this example)
+        serverSocket.close()
+
+    def handleRequest(self, connectionSocket):
+        try:
+            # 1. Receive request message from the client
+            message = connectionSocket.recv(MAX_DATA_RECV).decode()
+
+            # 2. Extract the path of the requested object from the message (second part of the HTTP header)
+            filename = message.split()[1]
+
+            # 3. Read the corresponding file from disk
+            with open(filename[1:], 'r') as f:  # Skip the leading '/'
+                content = f.read()
+
+            # 4. Create the HTTP response
+            response = 'HTTP/1.1 200 OK\r\n\r\n'
+            response += content
+
+            # 5. Send the content of the file to the socket
+            connectionSocket.send(response.encode())
+
+        except IOError:
+            # Handle file not found error
+            error_response = "HTTP/1.1 404 Not Found\r\n\r\n"
+            error_response += "<html><head></head><body><h1>404 Not Found</h1></body></html>\r\n"
+            connectionSocket.send(error_response.encode())
+
+        except Exception as e:
+            print(f"Error handling request: {e}")
+
+        finally:
+            # Close the connection socket
+            connectionSocket.close()
+
+# TODO: A proxy implementation 
+class Proxy(NetworkApplication):
+
+    def __init__(self, args):
+
+        self.cacheDir = "./cache"
+        os.makedirs(self.cacheDir, exist_ok=True)
+
+        self.cache = {} # local cache tracker
+
+        print('Web Proxy starting on port: %i...' % (args.port))
+
+        serverSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        serverSocket.bind(("", args.port))
+        serverSocket.listen(100)
+
+        print("Server listening on port", args.port)
+
+        while True:
+            connectionSocket, addr = serverSocket.accept()
+            print(f"Connection established with {addr}")
+            threading.Thread(target=self.handleRequest, args=(connectionSocket,)).start()
+        
+# create new socket and connect() to target server
+# send() to forward req
+# recv() on the server socket to get webserver response.
+
+    def handleRequest(self, connectionSocket) -> None:
+        try:
+            message = connectionSocket.recv(MAX_DATA_RECV).decode()
+            url = message.split()[1]
+            
+            if self.isCached(url):
+                print("Data cached - serving from cache:")
+                self.serveFromCache(connectionSocket, url)
+            else:
+                print("Data not in cache - fetching from server")
+                self.fetchAndCache(connectionSocket, message, url)
+        except Exception as e:
+            print(f"Error handling request: {e}")
+            connectionSocket.close()
+
+    def isCached(self, url: str) -> bool:
+        cacheFile = self.createHash(url)
+        return os.path.exists(cacheFile)
+
+    def serveFromCache(self, clientSocket, url: str) -> None:
+        try:
+            cachedFile = self.createHash(url)
+            with open(cachedFile, "rb") as f: # read binary
+                while (data := f.read(MAX_DATA_RECV)):
+                    clientSocket.send(data)
+        except Exception as e:
+            print(f"Error serving cache: {e}")
+        finally:
+            clientSocket.close()
+
+    def fetchAndCache(self, clientSocket, response: str, url: str) -> None:
+        try:
+            host = response.split()[4]
+
+            print(host)
+
+            targetSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+
+            targetSocket.connect((host, 80))
+            targetSocket.settimeout(5)
+            targetSocket.send(response.encode())
+
+            cacheFile = self.createHash(url)
+            cache = open(cacheFile, "wb")
+
+            while True:
+                try:
+                    data = targetSocket.recv(MAX_DATA_RECV)
+                    if not data:
+                        break
+
+                    clientSocket.send(data)
+                    cache.write(data)
+                except Exception as e:
+                    print(f"Error receiving data: {e}")
+
+            print("Fetched")
+
+        except Exception as e:
+            print(f"Fetch Error: {e}")
+
+        finally:
+            targetSocket.close()
+            clientSocket.close()
+            cache.close()
+    
+    def createHash(self, url: str) -> str:
+        # hash = sanitized url
+        hash = ''.join(c if c.isalnum() else '_' for c in url)
+        return os.path.join(self.cacheDir, f"{hash}.cache")
+            
+
+# NOTE: Do NOT delete the code below
+if __name__ == "__main__":
+        
+    args = setupArgumentParser()
+    args.func(args)
 
 
 # A basic multi-threaded web server implementation
