@@ -388,7 +388,7 @@ class Traceroute(ICMPPing):
 
         numBytes = 52
 
-        for i in range(3):
+        for i in range(1):
             #print(f"Sending probe {i+1} with TTL={ttl}")
             packetId = random.randint(1, 65535)
             timeSent = self.sendOnePing(self.dstAddress, packetId, i, ttl, dataLength=numBytes)
@@ -430,7 +430,7 @@ class Traceroute(ICMPPing):
         numBytes = 52
         dstPort = 33439
         
-        for _ in range(3): 
+        for _ in range(1): 
             # 1. Send one UDP traceroute probe
             dstPort += 1
             timeSent = self.sendOneUdpProbe(self.dstAddress, dstPort , ttl, numBytes)
@@ -622,7 +622,7 @@ class MultiThreadedTraceRoute(Traceroute):
                 self.dataPool["pktKeys"][ttl] = []
             # Send three probes per TTL
             
-            for _ in range(3):
+            for _ in range(1):
 
                 if args.protocol == "icmp":
                     timeSent = self.sendIcmpProbesAndCollectResponses(ttl)
