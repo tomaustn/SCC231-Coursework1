@@ -752,7 +752,14 @@ class Proxy(NetworkApplication):
         self.cacheDir = "./cache"
         os.makedirs(self.cacheDir, exist_ok=True)
 
+        if os.listdir(self.cacheDir):
+            print("Cache directory not empty. Clearing cache...")
+            for file in os.listdir(self.cacheDir):
+                os.remove(os.path.join(self.cacheDir, file))
+
+
         self.cache = {} # local cache tracker
+        self.lock = threading.Lock() # why is this proxy multithreaded? x_x
 
         print('Web Proxy starting on port: %i...' % (args.port))
 
@@ -802,30 +809,39 @@ class Proxy(NetworkApplication):
             clientSocket.close()
 
     def fetchAndCache(self, clientSocket, response: str, url: str) -> None:
+        self.isCaching = True
+
         try:
             host = response.split()[4]
-
             print(host)
-
             targetSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
             targetSocket.connect((host, 80))
-            targetSocket.settimeout(5)
+            targetSocket.settimeout(15)
             targetSocket.send(response.encode())
 
             cacheFile = self.createHash(url)
             cache = open(cacheFile, "wb")
 
-            while True:
-                try:
-                    data = targetSocket.recv(MAX_DATA_RECV)
-                    if not data:
-                        break
+            with self.lock:
+                while True:
+                    try:
+                        data = targetSocket.recv(MAX_DATA_RECV)
+                        # print(data)
+                        if not data:
+                            self.isCaching = False
+                            break
 
-                    clientSocket.send(data)
-                    cache.write(data)
-                except Exception as e:
-                    print(f"Error receiving data: {e}")
+                        clientSocket.send(data)
+                        cache.write(data)
+                        cache.flush()
+
+                    except socket.timeout:
+                        print("Socket timeout occurred, stopping data transfer.")
+                        break
+                    except Exception as e:
+                        print(f"Error receiving data: {e}")
+                        break
 
             print("Fetched")
 
